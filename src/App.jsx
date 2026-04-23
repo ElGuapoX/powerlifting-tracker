@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { supabase } from "./supabase";
 
 // ─── ROUTINE DATA ────────────────────────────────────────────────────────────
@@ -70,8 +70,10 @@ const RULE_LABELS   = { main:"Fuerza", hyp:"Hipertrofia", vol:"Volumen", auto:"A
 
 // ─── PROGRESSION LOGIC ───────────────────────────────────────────────────────
 function checkProgression(ex, repsArr) {
-  if (!repsArr || repsArr.length < ex.sets) return false;
-  return repsArr.slice(0, ex.sets).every(r => Number(r) >= ex.targetReps);
+  const sets = ex.customSets ?? ex.sets;
+  const target = ex.customReps ?? ex.targetReps;
+  if (!repsArr || repsArr.length < sets) return false;
+  return repsArr.slice(0, sets).every(r => Number(r) >= target);
 }
 
 function getProgStatus(ex, logs) {
@@ -228,15 +230,18 @@ function SetInput({ value, onChange, target }) {
 }
 
 // ─── EXERCISE ROW ─────────────────────────────────────────────────────────────
-function ExerciseRow({ ex, weight, logs, onLogSession, onWeightEdit, accent, currentWeek }) {
+function ExerciseRow({ ex, weight, logs, onLogSession, onWeightEdit, accent }) {
   const [expanded,      setExpanded]      = useState(false);
-  const [sessionReps,   setSessionReps]   = useState(Array(ex.sets).fill(""));
+  const [sessionReps,   setSessionReps]   = useState(Array(ex.customSets || ex.sets).fill(""));
   const [sessionWeight, setSessionWeight] = useState(weight);
   const [editingWeight, setEditingWeight] = useState(false);
   const [editVal,       setEditVal]       = useState(weight);
   const [saving,        setSaving]        = useState(false);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { setSessionWeight(weight); setEditVal(weight); }, [weight]);
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { setSessionReps(Array(ex.customSets || ex.sets).fill("")); }, [ex.customSets, ex.sets]);
 
   const progStatus = getProgStatus(ex, logs);
   const canLog     = ex.rule !== "auto" && sessionReps.every(r => r !== "");
@@ -249,7 +254,7 @@ function ExerciseRow({ ex, weight, logs, onLogSession, onWeightEdit, accent, cur
     if (!canLog) return;
     setSaving(true);
     await onLogSession(ex.id, sessionReps.map(Number), sessionWeight);
-    setSessionReps(Array(ex.sets).fill(""));
+    setSessionReps(Array(ex.customSets || ex.sets).fill(""));
     setSaving(false);
   }
 
@@ -276,7 +281,7 @@ function ExerciseRow({ ex, weight, logs, onLogSession, onWeightEdit, accent, cur
         </span>
 
         <span style={{ fontSize:12, color:"#aaa", whiteSpace:"nowrap" }}>
-          {ex.sets}×<span style={{ color:accent, fontWeight:700 }}>{ex.repsLabel}</span>
+          {(ex.customSets || ex.sets)}×<span style={{ color:accent, fontWeight:700 }}>{ex.customSets ? ex.customReps : ex.repsLabel}</span>
         </span>
 
         <div onClick={e => e.stopPropagation()}>
@@ -319,13 +324,13 @@ function ExerciseRow({ ex, weight, logs, onLogSession, onWeightEdit, accent, cur
           </p>
 
           <div style={{ display:"flex", alignItems:"flex-end", gap:10, flexWrap:"wrap" }}>
-            {Array(ex.sets).fill(0).map((_, i) => (
+            {Array(ex.customSets || ex.sets).fill(0).map((_, i) => (
               <div key={i} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}>
                 <span style={{ fontSize:9, color:"#555", fontFamily:"'JetBrains Mono',monospace" }}>S{i+1}</span>
                 <SetInput
                   value={sessionReps[i]}
                   onChange={v => setSessionReps(prev => { const n=[...prev]; n[i]=v; return n; })}
-                  target={ex.targetReps}
+                  target={ex.customReps || ex.targetReps}
                 />
               </div>
             ))}
@@ -368,7 +373,8 @@ function ExerciseRow({ ex, weight, logs, onLogSession, onWeightEdit, accent, cur
                             marginBottom:6, letterSpacing:"0.08em" }}>HISTORIAL</div>
               <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
                 {exLogs.map((log, i) => {
-                  const allHit = log.reps.every(r => r >= ex.targetReps);
+                  const target = ex.customReps ?? ex.targetReps;
+                  const allHit = log.reps.every(r => r >= target);
                   return (
                     <div key={i} style={{
                       padding:"5px 10px", borderRadius:7, fontSize:11,
@@ -393,16 +399,31 @@ function ExerciseRow({ ex, weight, logs, onLogSession, onWeightEdit, accent, cur
   );
 }
 
-// ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [user,        setUser]        = useState(null);
-  const [authReady,   setAuthReady]   = useState(false);
-  const [weights,     setWeights]     = useState({});
-  const [logs,        setLogs]        = useState([]);
-  const [activeDay,   setActiveDay]   = useState("Upper A");
-  const [activeTab,   setActiveTab]   = useState("training");
-  const [currentWeek, setCurrentWeek] = useState(1);
-  const [syncing,     setSyncing]     = useState(false);
+  const [user,             setUser]             = useState(null);
+  const [authReady,        setAuthReady]        = useState(false);
+  const [weights,          setWeights]          = useState({});
+  const [logs,             setLogs]             = useState([]);
+  const [activeDay,        setActiveDay]        = useState("Upper A");
+  const [activeTab,        setActiveTab]        = useState("training");
+  const [currentWeek,      setCurrentWeek]      = useState(1);
+  const [syncing,          setSyncing]          = useState(false);
+  const [customRoutines,   setCustomRoutines]   = useState(() => {
+    if (typeof window === "undefined") return {};
+    try {
+      const saved = window.localStorage.getItem("customRoutines");
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [customEditingDay, setCustomEditingDay] = useState("Upper A");
+  const [selectedExercise, setSelectedExercise] = useState(ALL_EXERCISES[0]?.id || "");
+  const currentCustomExercises = customRoutines[customEditingDay] || [];
+
+  useEffect(() => {
+    window.localStorage.setItem("customRoutines", JSON.stringify(customRoutines));
+  }, [customRoutines]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -415,9 +436,8 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  useEffect(() => { if (user) loadData(); }, [user]);
-
-  async function loadData() {
+  const loadData = useCallback(async () => {
+    if (!user) return;
     setSyncing(true);
     const { data: wData } = await supabase
       .from("weights").select("ex_id, weight").eq("user_id", user.id);
@@ -431,7 +451,10 @@ export default function App() {
       .order("logged_at", { ascending: true });
     setLogs(lData || []);
     setSyncing(false);
-  }
+  }, [user]);
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { if (user) loadData(); }, [loadData, user]);
 
   async function handleLogSession(exId, reps, weight) {
     const ex = ALL_EXERCISES.find(e => e.id === exId);
@@ -518,7 +541,7 @@ export default function App() {
           </div>
 
           <div style={{ display:"flex", gap:2 }}>
-            {[["training","Rutina"],["guide","Progresión"]].map(([key,label]) => (
+            {[["training","Rutina"],["custom","Personalizado"],["guide","Progresión"]].map(([key,label]) => (
               <button key={key} onClick={() => setActiveTab(key)} style={{
                 padding:"5px 12px", borderRadius:7, border:"none", cursor:"pointer",
                 background: activeTab===key ? "rgba(230,57,70,0.2)" : "transparent",
@@ -576,7 +599,13 @@ export default function App() {
             </div>
 
             {(() => {
-              const d = ROUTINE[activeDay];
+              const currentCustom = customRoutines[activeDay] || [];
+              const d = currentCustom.length > 0 ? {
+                ...ROUTINE[activeDay],
+                subtitle: "Rutina personalizada",
+                focus: "Entrenamiento propio",
+                exercises: currentCustom
+              } : ROUTINE[activeDay];
               return (
                 <>
                   <div style={{ display:"flex", alignItems:"flex-end", justifyContent:"space-between",
@@ -595,26 +624,138 @@ export default function App() {
                         </span>
                       </h2>
                     </div>
-                    <span style={{ fontSize:11, color:"#555" }}>
-                      {d.exercises.length} ejercicios
-                    </span>
+                    <button onClick={() => {
+                      setActiveTab("custom");
+                      setCustomEditingDay(activeDay);
+                    }} style={{
+                      padding:"6px 12px", borderRadius:8, border:"1px solid rgba(255,255,255,0.12)",
+                      background:"transparent", color:"#fff", cursor:"pointer", fontSize:11,
+                    }}>Editar rutina</button>
                   </div>
-                  {d.exercises.map(ex => (
-                    <ExerciseRow
-                      key={ex.id}
-                      ex={ex}
-                      weight={weights[ex.id] ?? ex.weight}
-                      logs={logs}
-                      onLogSession={handleLogSession}
-                      onWeightEdit={saveWeight}
-                      accent={d.accent}
-                      currentWeek={currentWeek}
-                    />
-                  ))}
+                  {d.exercises.length === 0 ? (
+                    <div style={{ padding:20, borderRadius:12, background:"rgba(255,255,255,0.04)", color:"#ccc" }}>
+                      {currentCustom.length > 0
+                        ? "Tu rutina personalizada está vacía. Agrega ejercicios en Personalizado."
+                        : "Esta semana aún usa la rutina por defecto. Ve a Personalizado para reemplazarla."}
+                    </div>
+                  ) : (
+                    d.exercises.map(ex => (
+                      <ExerciseRow
+                        key={ex.id}
+                        ex={ex}
+                        weight={weights[ex.id] ?? ex.weight}
+                        logs={logs}
+                        onLogSession={handleLogSession}
+                        onWeightEdit={saveWeight}
+                        accent={d.accent}
+                        currentWeek={currentWeek}
+                      />
+                    ))
+                  )}
                 </>
               );
             })()}
           </>
+        )}
+        {activeTab === "custom" && (
+          <div>
+            <h2 style={{ fontSize:18, fontWeight:800, color:"#fff", marginBottom:16 }}>
+              Construye tu Rutina Personalizada por Día
+            </h2>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:10, marginBottom:20, alignItems:"center" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <span style={{ color:"#aaa", fontSize:13 }}>Día</span>
+                <select value={customEditingDay} onChange={e => setCustomEditingDay(e.target.value)} style={{
+                  background:"#000", border:"1px solid rgba(255,255,255,0.18)",
+                  borderRadius:6, color:"#fff", padding:"8px 12px", fontSize:14,
+                }}>
+                  {Object.keys(ROUTINE).map(dayKey => (
+                    <option key={dayKey} value={dayKey} style={{ background:"#000", color:"#fff" }}>
+                      {ROUTINE[dayKey].label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <select value={selectedExercise} onChange={e => setSelectedExercise(e.target.value)} style={{
+                  background:"#000", border:"1px solid rgba(255,255,255,0.18)",
+                  borderRadius:6, color:"#fff", padding:"8px 12px", fontSize:14,
+                  minWidth:260
+                }}>
+                  {ALL_EXERCISES.map(ex => (
+                    <option key={ex.id} value={ex.id} style={{ background:"#000", color:"#fff" }}>{ex.name}</option>
+                  ))}
+                </select>
+                <button onClick={() => {
+                  const ex = ALL_EXERCISES.find(e => e.id === selectedExercise);
+                  if (ex && !currentCustomExercises.find(c => c.id === ex.id)) {
+                    const next = [...currentCustomExercises, { ...ex, customSets: ex.sets, customReps: ex.targetReps }];
+                    setCustomRoutines(prev => ({ ...prev, [customEditingDay]: next }));
+                  }
+                }} style={{
+                  padding:"8px 16px", borderRadius:6, border:"none", background:"#e63946", color:"#fff",
+                  fontWeight:600, cursor:"pointer"
+                }}>Agregar Ejercicio</button>
+              </div>
+            </div>
+            <div style={{ marginBottom:20 }}>
+              {currentCustomExercises.length === 0 ? (
+                <div style={{ padding:20, borderRadius:12, background:"rgba(255,255,255,0.04)", color:"#ccc" }}>
+                  Selecciona un día y comienza a armar tu rutina personalizada con la lista de ejercicios.
+                </div>
+              ) : currentCustomExercises.map((ex, i) => (
+                <div key={i} style={{
+                  display:"flex", alignItems:"center", gap:10, marginBottom:10,
+                  background:"rgba(255,255,255,0.04)", padding:"10px 14px", borderRadius:8
+                }}>
+                  <span style={{ flex:1, fontWeight:600 }}>{ex.name}</span>
+                  <input type="number" min="1" max="10" value={ex.customSets}
+                    onChange={e => {
+                      const next = [...currentCustomExercises];
+                      next[i].customSets = Number(e.target.value);
+                      setCustomRoutines(prev => ({ ...prev, [customEditingDay]: next }));
+                    }}
+                    style={{
+                      width:50, background:"rgba(255,255,255,0.07)", border:"1px solid rgba(255,255,255,0.18)",
+                      borderRadius:4, color:"#fff", textAlign:"center", fontSize:14
+                    }}
+                  />
+                  <span>sets ×</span>
+                  <input type="number" min="1" max="50" value={ex.customReps}
+                    onChange={e => {
+                      const next = [...currentCustomExercises];
+                      next[i].customReps = Number(e.target.value);
+                      setCustomRoutines(prev => ({ ...prev, [customEditingDay]: next }));
+                    }}
+                    style={{
+                      width:50, background:"rgba(255,255,255,0.07)", border:"1px solid rgba(255,255,255,0.18)",
+                      borderRadius:4, color:"#fff", textAlign:"center", fontSize:14
+                    }}
+                  />
+                  <span>reps</span>
+                  <button onClick={() => setCustomRoutines(prev => ({
+                      ...prev,
+                      [customEditingDay]: prev[customEditingDay].filter((_,idx) => idx !== i)
+                    }))}
+                    style={{
+                      padding:"4px 8px", borderRadius:4, border:"none", background:"#e63946", color:"#fff",
+                      cursor:"pointer", fontSize:12
+                    }}>Remover</button>
+                </div>
+              ))}
+            </div>
+            <button onClick={() => {
+              if (currentCustomExercises.length > 0) {
+                setActiveTab("training");
+                setActiveDay(customEditingDay);
+              }
+            }} disabled={currentCustomExercises.length === 0} style={{
+              padding:"12px 24px", borderRadius:8, border:"none",
+              background: currentCustomExercises.length > 0 ? "#e63946" : "#333",
+              color: currentCustomExercises.length > 0 ? "#fff" : "#666",
+              fontWeight:700, fontSize:14, cursor: currentCustomExercises.length > 0 ? "pointer" : "default"
+            }}>Guardar y usar como rutina</button>
+          </div>
         )}
 
         {activeTab === "guide" && (
